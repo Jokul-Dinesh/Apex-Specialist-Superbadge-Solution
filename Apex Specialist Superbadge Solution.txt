@@ -1,0 +1,526 @@
+Challenge 2 --
+
+public with sharing class MaintenanceRequestHelper {
+    public static void updateWorkOrders(List<Case> updWorkOrders, Map<Id,Case> nonUpdCaseMap) {
+        Set<Id> validIds = new Set<Id>();
+        
+        
+        For (Case c : updWorkOrders){
+            if (nonUpdCaseMap.get(c.Id).Status != 'Closed' && c.Status == 'Closed'){
+                if (c.Type == 'Repair' || c.Type == 'Routine Maintenance'){
+                    validIds.add(c.Id);
+                    
+                    
+                }
+            }
+        }
+        
+        if (!validIds.isEmpty()){
+            List<Case> newCases = new List<Case>();
+            Map<Id,Case> closedCasesM = new Map<Id,Case>([SELECT Id, Vehicle__c, ProductId, Product.Maintenance_Cycle__c,(SELECT Id,Equipment__c,Quantity__c FROM Equipment_Maintenance_Items__r) 
+                                                          FROM Case WHERE Id IN :validIds]);
+            Map<Id,Decimal> maintenanceCycles = new Map<ID,Decimal>();
+            AggregateResult[] results = [SELECT Maintenance_Request__c, MIN(Equipment__r.Maintenance_Cycle__c)cycle FROM Equipment_Maintenance_Item__c WHERE Maintenance_Request__c IN :ValidIds GROUP BY Maintenance_Request__c];
+            
+            for (AggregateResult ar : results){ 
+                maintenanceCycles.put((Id) ar.get('Maintenance_Request__c'), (Decimal) ar.get('cycle'));
+            }
+            
+            for(Case cc : closedCasesM.values()){
+                Case nc = new Case (
+                    ParentId = cc.Id,
+                    Status = 'New',
+                    Subject = 'Routine Maintenance',
+                    Type = 'Routine Maintenance',
+                    Vehicle__c = cc.Vehicle__c,
+                    ProductId =cc.ProductId,
+                    Origin = 'Web',
+                    Date_Reported__c = Date.Today()
+                    
+                );
+                
+                If (maintenanceCycles.containskey(cc.Id)){
+                    nc.Date_Due__c = Date.today().addDays((Integer) maintenanceCycles.get(cc.Id));
+                } else {
+                    nc.Date_Due__c = Date.today().addDays((Integer) cc.Product.maintenance_Cycle__c);
+                }
+                
+                newCases.add(nc);
+            }
+            
+            insert newCases;
+            
+            List<Equipment_Maintenance_Item__c> clonedWPs = new List<Equipment_Maintenance_Item__c>();
+            for (Case nc : newCases){
+                for (Equipment_Maintenance_Item__c wp : closedCasesM.get(nc.ParentId).Equipment_Maintenance_Items__r){
+                    Equipment_Maintenance_Item__c wpClone = wp.clone();
+                    wpClone.Maintenance_Request__c = nc.Id;
+                    ClonedWPs.add(wpClone);
+                    
+                }
+            }
+            insert ClonedWPs;
+        }
+    }
+}    
+
+
+
+==================================================================================================================================
+
+
+
+
+trigger MaintenanceRequest on Case (before update, after update) {
+
+if(Trigger.isUpdate && Trigger.isAfter){
+
+    MaintenanceRequestHelper.updateWorkOrders(Trigger.New, Trigger.OldMap);
+
+}  }
+
+
+//Save the Above 2 codes and check challenge 2
+==================================================================================================================================
+
+Challenge 3 --
+
+
+public with sharing class WarehouseCalloutService implements Queueable {
+    private static final String WAREHOUSE_URL = 'https://th-superbadge-apex.herokuapp.com/equipment';
+    
+    //class that makes a REST callout to an external warehouse system to get a list of equipment that needs to be updated.
+    //The callout’s JSON response returns the equipment records that you upsert in Salesforce. 
+    
+    @future(callout=true)
+    public static void runWarehouseEquipmentSync(){
+        Http http = new Http();
+        HttpRequest request = new HttpRequest();
+        
+        request.setEndpoint(WAREHOUSE_URL);
+        request.setMethod('GET');
+        HttpResponse response = http.send(request);
+        
+        List<Product2> warehouseEq = new List<Product2>();
+        
+        if (response.getStatusCode() == 200){
+            List<Object> jsonResponse = (List<Object>)JSON.deserializeUntyped(response.getBody());
+            System.debug(response.getBody());
+            
+            //class maps the following fields: replacement part (always true), cost, current inventory, lifespan, maintenance cycle, and warehouse SKU
+            //warehouse SKU will be external ID for identifying which equipment records to update within Salesforce
+            for (Object eq : jsonResponse){
+                Map<String,Object> mapJson = (Map<String,Object>)eq;
+                Product2 myEq = new Product2();
+                myEq.Replacement_Part__c = (Boolean) mapJson.get('replacement');
+                myEq.Name = (String) mapJson.get('name');
+                myEq.Maintenance_Cycle__c = (Integer) mapJson.get('maintenanceperiod');
+                myEq.Lifespan_Months__c = (Integer) mapJson.get('lifespan');
+                myEq.Cost__c = (Integer) mapJson.get('cost');
+                myEq.Warehouse_SKU__c = (String) mapJson.get('sku');
+                myEq.Current_Inventory__c = (Double) mapJson.get('quantity');
+                myEq.ProductCode = (String) mapJson.get('_id');
+                warehouseEq.add(myEq);
+            }
+            
+            if (warehouseEq.size() > 0){
+                upsert warehouseEq;
+                System.debug('Your equipment was synced with the warehouse one');
+            }
+        }
+    }
+    
+    public static void execute (QueueableContext context){
+        runWarehouseEquipmentSync();
+    }
+    
+}
+
+
+
+------------------------------------------------------------------------------------------------------------------------------
+//Save the above class and run the below code in annonymous window
+
+System.enqueueJob(new WarehouseCalloutService());
+
+//And check challenge 3
+==================================================================================================================================
+
+Challenge 4 --
+
+
+
+global class WarehouseSyncSchedule implements Schedulable {
+ 
+
+    global void execute(SchedulableContext ctx) {
+ 
+
+        System.enqueueJob(new WarehouseCalloutService());
+ 
+
+    }
+ 
+
+}global class WarehouseSyncSchedule implements Schedulable {
+ 
+
+    global void execute(SchedulableContext ctx) {
+ 
+
+        System.enqueueJob(new WarehouseCalloutService());
+ 
+
+    }
+ 
+
+}
+
+------------------------------------------------------------------------------------------------------------------------------
+//Save the above code and schedule the class in setup (UI) with below details
+
+
+Setup --> Apex Classes --> Schedule apex
+with name of job = WarehouseSyncScheduleJob
+select the schedule apex = WarehouseSyncSchedule
+And select all days in week and time 1 am
+
+
+//And check challenge 4 --
+==================================================================================================================================
+//Challenge 5 -- Save all the below classes (replace the existing one)
+
+
+trigger MaintenanceRequest on Case (after update) {
+ 
+
+    //List<Case> casesToEvaluate = new List<Case>();
+ 
+
+    Map<Id, Case> casesToEvaluate = new Map<Id, Case>();
+ 
+
+    if(Trigger.isAfter && Trigger.isUpdate){
+ 
+
+        for(Case maintenance:Trigger.new){
+ 
+
+            if((maintenance.Type.contains('Repair') || maintenance.Type.contains('Routine Maintenance')) && maintenance.Status == 'Closed'){
+ 
+
+                casesToEvaluate.put(maintenance.Id,maintenance);
+ 
+
+            }
+ 
+
+        }       
+ 
+
+    }
+ 
+
+    MaintenanceRequestHelper.updateWorkOrders(casesToEvaluate);
+ 
+
+}
+
+
+
+
+
+==================================================================================================================================
+
+
+
+public class MaintenanceRequestHelper {
+ 
+
+    public static void updateWorkOrders(Map<Id, Case>  cases){
+ 
+
+        List<Case> maintenance_routineList = new List<Case>();
+ 
+
+        List<Product2> listProduct = [select Id, Maintenance_Cycle__c from Product2];  
+ 
+
+        Map<Id,decimal> mapProduct = new Map<Id, decimal>();
+ 
+
+        for (Product2 p : listProduct) {
+ 
+
+            if (p != null) {
+ 
+
+                if(p.Maintenance_Cycle__c != null){
+ 
+
+                    mapProduct.put(p.Id, p.Maintenance_Cycle__c);
+ 
+
+                }               
+ 
+
+            }
+ 
+
+        }
+ 
+
+        System.debug('### product: '+mapProduct);
+ 
+
+        for(Case maintenance:cases.values()){
+ 
+
+            Case maintenanceNew = new Case();
+ 
+
+            maintenanceNew.Subject = 'Routine Maintenance';
+ 
+
+           // System.debug('### Second: '+mapProduct.get(maintenance.Equipment__c));
+ 
+
+            if (mapProduct.get(maintenance.Equipment__c) != null) {
+ 
+
+                 maintenanceNew.Date_Due__c = Date.today().addDays(Integer.valueOf(mapProduct.get(maintenance.Equipment__c)));
+ 
+
+            }
+ 
+
+            maintenanceNew.Vehicle__c = maintenance.Vehicle__c;
+ 
+
+            maintenanceNew.Product__c = maintenance.Product__c;
+ 
+
+            maintenanceNew.ContactId  = maintenance.ContactId;
+ 
+
+            maintenanceNew.AccountId  = maintenance.AccountId;
+ 
+
+            maintenanceNew.AssetId    = maintenance.AssetId;
+ 
+
+            maintenanceNew.Type       = 'Routine Maintenance';
+ 
+
+            maintenanceNew.Status     = 'New';
+ 
+
+            maintenanceNew.Subject    = maintenance.Subject;
+ 
+
+            maintenanceNew.Equipment__c = maintenance.Equipment__c;
+ 
+
+            maintenanceNew.Date_Reported__c = Date.today();
+ 
+
+            maintenance_routineList.add(maintenanceNew);
+ 
+
+        }
+ 
+
+        insert maintenance_routineList;
+ 
+
+    }
+ 
+
+}
+
+
+
+
+==================================================================================================================================
+
+
+@isTest
+ 
+
+private class MaintenanceRequestHelperTest {
+ 
+
+    @isTest static void test_method_one() {
+ 
+
+        List<Case> caseList = new List<Case>();
+ 
+
+        List<Case> secondList = new List<Case>();
+ 
+
+        Account acc = new Account();
+ 
+
+        acc.Name = 'test';
+ 
+
+        insert acc;
+ 
+
+        Contact contact = new Contact();
+ 
+
+        contact.FirstName = 'test';
+ 
+
+        contact.LastName = 'last';
+ 
+
+        contact.Email = 'test@test.com';
+ 
+
+        contact.AccountId = acc.Id;
+ 
+
+        insert contact;
+ 
+
+        Vehicle__c vehicle = new Vehicle__c();
+ 
+
+        vehicle.Name = 'car';
+ 
+
+        insert vehicle;
+ 
+
+        Product2 product = new Product2();
+ 
+
+        product.Name = 'test';
+ 
+
+        product.isActive = true;
+ 
+
+        product.Maintenance_Cycle__c = 2;
+ 
+
+        product.Replacement_Part__c = true;
+ 
+
+        insert product;
+ 
+
+        for(Integer i=1;i<=1000;i++){
+ 
+
+            Case maintenanceNew             = new Case();
+ 
+
+            maintenanceNew.Subject          = 'Other';
+ 
+
+            maintenanceNew.Vehicle__c       = vehicle.Id;
+ 
+
+            maintenanceNew.Product__c       = product.Id;
+ 
+
+            maintenanceNew.ContactId        = contact.Id;
+ 
+
+            maintenanceNew.AccountId        = acc.Id;
+ 
+
+            maintenanceNew.Type             = 'Other';
+ 
+
+            maintenanceNew.Status           = 'New';
+ 
+
+            maintenanceNew.Equipment__c     = product.Id;
+ 
+
+            maintenanceNew.Date_Reported__c = Date.today();
+ 
+
+            maintenanceNew.Date_Due__c      = Date.today();
+ 
+
+            caseList.add(maintenanceNew);   
+ 
+
+        }
+ 
+
+        insert caseList;
+ 
+
+        System.assertEquals(1000,caseList.size());
+ 
+
+        for(Case cas:caseList){
+ 
+
+            //update information
+ 
+
+            cas.Type = 'Repair';
+ 
+
+            cas.Status = 'Closed';
+ 
+
+            secondList.add(cas);
+ 
+
+        }
+ 
+
+        update secondList;
+ 
+
+        List<Case> createdCases = [Select Id from Case where Type = 'Routine Maintenance'];
+ 
+
+        System.assertEquals(1000,createdCases.size());
+ 
+
+    }   
+ 
+
+}
+
+==================================================================================================================================
+
+
+@isTest
+global class WarehouseCalloutServiceMock implements HttpCalloutMock {
+    // implement http mock callout
+    global HttpResponse respond(HttpRequest request){
+        
+        System.assertEquals('https://th-superbadge-apex.herokuapp.com/equipment', request.getEndpoint());
+        System.assertEquals('GET', request.getMethod());
+        
+    	// Create a fake response
+		HttpResponse response = new HttpResponse();
+        response.setHeader('Content-Type', 'application/json');
+		response.setBody('[{"_id":"55d66226726b611100aaf741","replacement":false,"quantity":5,"name":"Generator 1000 kW","maintenanceperiod":365,"lifespan":120,"cost":5000,"sku":"100003"}]');
+        response.setStatusCode(200);
+        return response;
+    }
+}
+
+
+
+==================================================================================================================================
+
+//Before checking challenge Run all code atleast once to code coverage- 
+//Check all remaining challenges
+
+
+
+
+==================================================================================================================================
